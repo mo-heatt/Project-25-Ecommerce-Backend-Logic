@@ -1,114 +1,190 @@
+const User = require('../models/userModel');
 const asyncErrorHandler = require('../middlewares/asyncErrorHandler');
-const Order = require('../models/orderModel');
-const Product = require('../models/productModel');
-const ErrorHandler = require('../middlewares/error');
+const sendToken = require('../utils/sendToken');
+const ErrorHandler = require('../utils/errorHandler');
 const sendEmail = require('../utils/sendEmail');
+const crypto = require('crypto');
+const bcrypt = require('bcrypt');
+const cloudinary = require('cloudinary');
 
-exports.newOrder = asyncErrorHandler(async(req,res,next)=>{
-    const{shippingInfo, orderItems, paymentInfo, totalPrice} = req.body;
-    const OrderExist = await Order.findOne({paymentInfo});
-    if(OrderExist){
-        return next(new ErrorHandler('Order already exists',400));
-    }
-    const order = await Order.create({
-        shippingInfo,
-        orderItems,
-        paymentInfo,
-        totalPrice,
-        paidAt: Date.now(),
-        user: req.user._id,
+exports.registerUser = asyncErrorHandler( async(req,res,next) => {
+    const myCloud = await cloudinary.v2.uploader.upload(req.body.avatar, {
+        folder: "avatars",
+        width: 150,
+        crop: "scale",
     });
-    await sendEmail({
-        email: req.user.email,
-        tempelateId: process.env.SENDGRID_ORDER_TEMPELATED,
-        data: {
-            name: req.user.name,
-            shippingInfo,
-            orderItems,
-            totalPrice,
-            id: order._id,
-        }
+
+    const {name, email, gender, password} = req.body;
+
+    const user = User.create({
+        name,
+        email,
+        gender,
+        password,
+        avatar:{
+            public_id: myCloud.public_id,
+            url: myCloud.secure_url,
+        },
+    });
+    sendToken(user, 201, res);
+});
+
+exports.loginUser = asyncErrorHandler(async (req,res,next)=>{
+    const {email, password} = req.body;
+    if(!email || !password){
+        return next(new ErrorHandler("Please enter email and password",400));
+    }
+    const user = await User.findOne({email}).select("+password");
+    if(!user){
+        return next (new ErrorHandler("email not found!"));
+    }
+    const isPasswordmatched = await bcrypt.comparePassword(user.password,this.password);
+    if(!isPasswordmatched){
+        return next(new ErrorHandler("Invalid password",401));
+    }
+    sendToken(user,201,res);
+});
+
+exports.logOutUser = asyncErrorHandler(async (req,res,next)=>{
+    res.cookie("token",null,{
+        expires: new Date(Date.now()),
+        httpOnly: true,
     });
     res.status(200).json({
         success: true,
-        order,
-    });
-})
-
-exports.getSingleOrderDetails = asyncErrorHandler(async (req,res,next) => {
-    const order  = await Order.findById(req.params.id).populate("user", "name email");
-    if(!order){
-        return next(new ErrorHandler('Order not found',400));
-    }
-    res.status(200).json({
-        success: true,
-        order,
+        message: "Logged Out",
     });
 });
 
-exports.myOrders = asyncErrorHandler(async (req,res,next) => {
-    const orders = await Order.find({user:req.user._id});
-    if(!orders){
-        return next(new ErrorHandler("Orders not found",404));
-    }
-    res.status(200).json({
-        success: true,
-        orders,
-    });
-});
-
-exports.getAllOrder = asyncErrorHandler(async (req,res,next) => {
-    const orders = await Order.find();
-    if(!orders){
-        return next(new ErrorHandler("Orders Not Found", 404));
-    }
-    let totalAmount = 0;
-    orders.forEach(order => {
-        totalAmount = totalAmount + order.totalPrice;
-    });
+exports.getUserDetails =  asyncErrorHandler(await (req,res,next)=>{
+    const user = await User.findById(req.user.id);
     res.status(200).json({
         success:true,
-        orders,
-        totalAmount,
+        user,
     });
 });
 
-exports.updateOrder = asyncErrorHandler(async (req,res,next)=>{
-    const order = await Order.findById(req.params.id);
-    if(!order){
-        return next(new ErrorHandler("Order not found",404));
+exports.forgotPassword = asyncErrorHandler(await (req,res, next)=>{
+    const user = await User.findOne({email:req.body.email);
+    if(!user){
+        return next(new ErrorHandler("User not found",404));
     }
-    if(order.orderStatus === "Delieverd"){
-        return next (new ErrorHandler("Already Delievered",400));
-    }
-    if(req.body.status === "Shipped"){
-        ordershippedAt = Date.now();
-        order.orderItems.forEach(async (i) => {
-            await updateStock(i.product,i.quantity)
+    const resetToken = await user.getResetPasswordToken();
+    await user.save({validateBeforeSave : false});
+    const resetPasswordUrl = `https://${req.get("host")}/password/reset/${resetToken}`;
+    try{
+        await sendMail({
+            email:user.email,
+            tempelateId: process.env.SENDGRID_RESET_TEMPLATED,
+            data:{
+                reset_url: resetPasswordUrl,
+            }
         });
+        res.status(200).json({
+            success: true,
+            message: `Email sent to ${user.email} sucessfully`,
+        })
+    } catch (error){
+        user.resetPasswordToken = undefined;
+        user.resetPasswordExpire = undefined;
+
+        await user.save({validateBeforeSave: false});
+        return next(new ErrorHandler(error.message, 500))
     }
-    order.orderStatus = req.body.status;
-    if(req.body.status === "Delievered"){
-        order.deliveredAt = Date.now();
+});
+
+exports.resetPassword = asyncErrorHandler(async (req,res, next)=>{
+    const resetPasswordToken = crypto.createHash("sha256").update(req.params.token).digest("hex");
+    const user = await User.findOne({
+        resetPasswordToken,
+        resetPasswordExpire : {$gt: Date.now()},
+    });
+    if(!user){
+        return next(new ErrorHandler("Invalid reset password token",400));
     }
-    await order.save({validateBeforeSave: false});
+    user.password = req.body.password;
+    user.resetPassworToken = undefined;
+    user.resetPasswordExpire = undefined;
+
+    await user.save();
+    sendToken(user,200,res);
+});
+
+exports.updatePassword = asyncErrorHandler(async(req,res,next)=>{
+    const user = await User.findOne({email}).select("+password");
+    const isPasswordmatched = await user.comparePassword(req.body.oldPassword);
+    if(!isPasswordmatched){
+        return next(new ErrorHandler("old Password is Invalid",400));
+    }
+    user.password = req.body.newPassword;
+    await user.save();
+    sendToken(user,201,res);
+});
+
+exports.updateProfile = asyncErrorHandler(await (req,res,next)=>{
+    const newUserData = {
+        name: req.body.name,
+        email: req.body.email,
+    }
+
+    if(req.body.avatar !== ""){
+        const user = await User.findById(req.user.id);
+        const ImageId = user.avatar.public_id;
+        await cloudinary.v2.uploader.destroy(imageId);
+        const myCloud = await cloudinary.v2.uploader(req.body.avatar, {
+            folder: "avatar",
+            width: 150,
+            crop: "scale",
+        });
+        newUserData.avatar = {
+            public_id: myCloud.public_id,
+            url: myCloud.secure_url,
+        }
+    }
+    await User.findByIdAndUpdate(req.user.id, newUserData, {
+        new: true,
+        runValidators: true,
+        useFindAndModify: true,
+    });
     res.status(200).json({
         success: true,
     });
 });
 
-async function updateStock(id,quantity){
-    const product = await Product.findById(id);
-    product.stock = product.stock - quantity;
-    await product.save({validateBeforeSave: false});
-}
-
-exports.deleteOrder = asyncErrorHandler(async (req,res,next)=>{
-    const order = await Order.findById(req.params.id);
-    if(!order){
-        return next(new ErrorHandler("Order not found",404));
+exports.getSingleUser = asyncErrorHandler(await (req,res,next)=>{
+    const user = await User.findById(req.params.id);
+    if(!user){
+        return next(new ErrorHandler(`User does not exist with id: ${req.params.id}`,400));
     }
-    await order.remove();
+    res.status(200).json({
+        success: true,
+        user,
+    });
+});
+
+exports.updateUserRole = asyncErrorHandler(await(req,res,next)=>{
+    const newUserData = {
+        name: req.body.name,
+        email: req.body.email,
+        gender: req.body.gender,
+        role: req.body.role,
+    }
+    await User.findByIdAndUpdate(req.params.id, newUserData, {
+        new: true,
+        runValidators: true,
+        useFindAndModify: false,
+    });
+    res.status(200).json({
+        success: true,
+    });
+});
+
+exports.deleteUser = asyncErrorHandler(await (req,res,next)=>{
+    const user = await User.findById(req.params.id);
+    if(!user){
+        return next(new ErrorHandler(`User with id : ${req.params.id} does not exist,404`));
+    }
+    await user.remove();
     res.status(200).json({
         success: true,
     });
