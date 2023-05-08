@@ -56,7 +56,7 @@ exports.logOutUser = asyncErrorHandler(async (req,res,next)=>{
     });
 });
 
-exports.getUserDetails =  asyncErrorHandler(await (req,res,next)=>{
+exports.getUserDetails =  asyncErrorHandler(async (req,res,next)=>{
     const user = await User.findById(req.user.id);
     res.status(200).json({
         success:true,
@@ -64,8 +64,8 @@ exports.getUserDetails =  asyncErrorHandler(await (req,res,next)=>{
     });
 });
 
-exports.forgotPassword = asyncErrorHandler(await (req,res, next)=>{
-    const user = await User.findOne({email:req.body.email);
+exports.forgotPassword = asyncErrorHandler(async (req,res, next) => {
+    const user = await User.findOne({email:req.body.email});
     if(!user){
         return next(new ErrorHandler("User not found",404));
     }
@@ -73,7 +73,7 @@ exports.forgotPassword = asyncErrorHandler(await (req,res, next)=>{
     await user.save({validateBeforeSave : false});
     const resetPasswordUrl = `https://${req.get("host")}/password/reset/${resetToken}`;
     try{
-        await sendMail({
+        await sendEmail({
             email:user.email,
             tempelateId: process.env.SENDGRID_RESET_TEMPLATED,
             data:{
@@ -121,7 +121,7 @@ exports.updatePassword = asyncErrorHandler(async(req,res,next)=>{
     sendToken(user,201,res);
 });
 
-exports.updateProfile = asyncErrorHandler(await (req,res,next)=>{
+exports.updateProfile = asyncErrorHandler(async (req,res,next)=>{
     const newUserData = {
         name: req.body.name,
         email: req.body.email,
@@ -129,7 +129,7 @@ exports.updateProfile = asyncErrorHandler(await (req,res,next)=>{
 
     if(req.body.avatar !== ""){
         const user = await User.findById(req.user.id);
-        const ImageId = user.avatar.public_id;
+        const imageId = user.avatar.public_id;
         await cloudinary.v2.uploader.destroy(imageId);
         const myCloud = await cloudinary.v2.uploader(req.body.avatar, {
             folder: "avatar",
@@ -151,7 +151,7 @@ exports.updateProfile = asyncErrorHandler(await (req,res,next)=>{
     });
 });
 
-exports.getSingleUser = asyncErrorHandler(await (req,res,next)=>{
+exports.getSingleUser = asyncErrorHandler(async (req,res,next)=>{
     const user = await User.findById(req.params.id);
     if(!user){
         return next(new ErrorHandler(`User does not exist with id: ${req.params.id}`,400));
@@ -162,7 +162,7 @@ exports.getSingleUser = asyncErrorHandler(await (req,res,next)=>{
     });
 });
 
-exports.updateUserRole = asyncErrorHandler(await(req,res,next)=>{
+exports.updateUserRole = asyncErrorHandler(async(req,res,next)=>{
     const newUserData = {
         name: req.body.name,
         email: req.body.email,
@@ -179,7 +179,7 @@ exports.updateUserRole = asyncErrorHandler(await(req,res,next)=>{
     });
 });
 
-exports.deleteUser = asyncErrorHandler(await (req,res,next)=>{
+exports.deleteUser = asyncErrorHandler(async (req,res,next)=>{
     const user = await User.findById(req.params.id);
     if(!user){
         return next(new ErrorHandler(`User with id : ${req.params.id} does not exist,404`));
